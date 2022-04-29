@@ -91,7 +91,7 @@ impl Unlambda {
     fn run(&mut self, prog: Rc<AstNode>) -> MaybeEvaluated {
         let (mut prog, mut continuation) = self.step(prog.into(), Continuation::End.into());
         while *continuation != Continuation::End {
-            //println!("{:?} -- {:?}", prog, continuation);
+            // println!("{:?} -- {:?}", prog, continuation);
             (prog, continuation) = self.step(prog, continuation);
         }
         prog
@@ -151,9 +151,14 @@ impl Unlambda {
             Value::Term => (func.into(), continuation),
             Value::Read => {
                 let mut buf = [0];
-                if let Ok(_) = stdin().read(&mut buf) {
-                    self.current_char = Some(buf[0] as char);
-                    self.apply_value(arg, Value::Identity.into(), continuation)
+                if let Ok(s) = stdin().read(&mut buf) {
+                    if (s == 1) {
+                        self.current_char = Some(buf[0] as char);
+                        self.apply_value(arg, Value::Identity.into(), continuation)
+                    } else {
+                        self.current_char = None;
+                        self.apply_value(arg, Value::Term.into(), continuation)
+                    }
                 } else {
                     self.current_char = None;
                     self.apply_value(arg, Value::Term.into(), continuation)
