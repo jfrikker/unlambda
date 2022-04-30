@@ -7,7 +7,7 @@ import Parser (parseUnlambda)
 import System.Environment (getArgs)
 import qualified System.IO as IO
 import Text.Parsec.Text (parseFromFile)
-import Control.Monad.State.Strict (StateT, MonadState (get, put))
+import Control.Monad.State.Strict (StateT, MonadState (get, put), evalStateT)
 import Control.Monad.Trans (liftIO)
 import System.IO (isEOF)
 
@@ -16,6 +16,8 @@ main = do
     args <- getArgs
     Right input <- parseFromFile parseUnlambda $ args !! 0
     TLIO.putStrLn $ toLazyText $ showAst input
+    out <- run input
+    print out
 
 data Value = VPrintChar Char |
     VConstant0 |
@@ -27,63 +29,59 @@ data Value = VPrintChar Char |
     VDistribute2 Value Value |
     VIdentity |
     VLazy0 |
-    VLazy1 MaybeEvaluated |
+    VLazy1 AstNode |
     VRead |
     VPrintCC |
     VTerm deriving (Show)
 
-data Continuation = CApply1 MaybeEvaluated Continuation |
+data Continuation = CEvalApply AstNode Continuation |
+    CApply1 Value Continuation |
     CApply2 Value Continuation |
     CDistribute Value Value Continuation |
-    CLazy0 MaybeEvaluated Continuation |
     CEnd deriving (Show)
 
-data MaybeEvaluated = Evaluated Value |
-    Unevaluated AstNode deriving (Show)
+run :: AstNode -> IO Value
+run prog = evalStateT (eval prog CEnd) Nothing
 
-step :: MaybeEvaluated -> Continuation -> StateT (Maybe Char) IO (MaybeEvaluated, Continuation)
-step (Unevaluated (AST.Apply f a)) continuation = return (Unevaluated f, CApply1 (Unevaluated a) continuation)
-step (Unevaluated (AST.PrintChar c)) continuation = return (Evaluated $ VPrintChar c, continuation)
-step (Unevaluated AST.Constant) continuation = return (Evaluated VConstant0, continuation)
-step (Unevaluated AST.Continuation) continuation = return (Evaluated VCreateContinuation, continuation)
-step (Unevaluated AST.Identity) continuation = return (Evaluated VIdentity, continuation)
-step (Unevaluated AST.Distribute) continuation = return (Evaluated VDistribute0, continuation)
-step (Unevaluated AST.Lazy) continuation = return (Evaluated VLazy0, continuation)
-step (Unevaluated AST.Term) continuation = return (Evaluated VTerm, continuation)
-step (Unevaluated AST.Read) continuation = return (Evaluated VRead, continuation)
-step (Unevaluated AST.PrintCC) continuation = return (Evaluated VPrintCC, continuation)
-step (Evaluated v) continuation = continu continuation v
+eval :: AstNode -> Continuation -> StateT (Maybe Char) IO Value
+eval (AST.Apply f a) continuation = eval f $ CEvalApply a continuation
+eval (AST.PrintChar c) continuation = continu continuation $ VPrintChar c
+eval AST.Constant continuation = continu continuation VConstant0
+eval AST.Continuation continuation = continu continuation VCreateContinuation
+eval AST.Identity continuation = continu continuation VIdentity
+eval AST.Distribute continuation = continu continuation VDistribute0
+eval AST.Lazy continuation = continu continuation VLazy0
+eval AST.Term continuation = continu continuation VTerm
+eval AST.Read continuation = continu continuation VRead
+eval AST.PrintCC continuation = continu continuation VPrintCC
 
-maybeApply :: Value -> MaybeEvaluated -> Continuation -> (MaybeEvaluated, Continuation)
-maybeApply VLazy0 arg continuation = (Evaluated $ VLazy1 arg, continuation)
-maybeApply (VLazy1 f) arg continuation = (arg, CLazy0 f continuation)
-maybeApply f arg continuation = (arg, CApply2 f continuation)
-
-applyValue :: Value -> Value -> Continuation -> StateT (Maybe Char) IO (MaybeEvaluated, Continuation)
-applyValue (VPrintChar c) arg continuation = liftIO (putStr [c]) >> return (Evaluated arg, continuation)
-applyValue VConstant0 arg continuation = return (Evaluated $ VConstant1 arg, continuation)
-applyValue (VConstant1 k) arg continuation = return (Evaluated k, continuation)
-applyValue (VContinuation c) arg _ = return (Evaluated arg, c)
-applyValue VCreateContinuation arg continuation = return (Evaluated $ VContinuation continuation, CApply2 arg continuation)
-applyValue VDistribute0 arg continuation = return (Evaluated $ VDistribute1 arg, continuation)
-applyValue (VDistribute1 f1) arg continuation = return (Evaluated $ VDistribute2 f1 arg, continuation)
-applyValue (VDistribute2 f1 f2) arg continuation = return (Evaluated arg, CApply2 f1 $ CDistribute f2 arg continuation)
-applyValue VIdentity arg continuation = return (Evaluated arg, continuation)
-applyValue VLazy0 arg continuation = return (Evaluated $ VLazy1 $ Evaluated arg, continuation)
-applyValue (VLazy1 f) arg continuation = return (f, CApply1 (Evaluated arg) continuation)
-applyValue VPrintCC arg continuation = do
+apply :: Value -> Value -> Continuation -> StateT (Maybe Char) IO Value
+apply (VPrintChar c) arg continuation = liftIO (putStr [c]) >> continu continuation arg
+apply VConstant0 arg continuation = continu continuation $ VConstant1 arg
+apply (VConstant1 k) arg continuation = continu continuation k
+apply (VContinuation c) arg _ = continu c arg
+apply VCreateContinuation arg continuation = continu (CApply2 arg continuation) $ VContinuation continuation
+apply VDistribute0 arg continuation = continu continuation $ VDistribute1 arg
+apply (VDistribute1 f1) arg continuation = continu continuation $ VDistribute2 f1 arg
+apply (VDistribute2 f1 f2) arg continuation = continu (CDistribute f2 arg continuation) arg
+apply VIdentity arg continuation = continu continuation arg
+apply VLazy0 arg continuation = continu continuation arg
+apply (VLazy1 f) arg continuation = eval f $ CApply1 arg continuation
+apply VPrintCC arg continuation = do
     c <- get
-    liftIO $ maybe (return (Evaluated VTerm, continuation)) (\c -> putStr [c] >> return (Evaluated arg, continuation)) c
-applyValue VTerm _ continuation = return (Evaluated $ VTerm, continuation)
-applyValue VRead arg continuation = do
+    res <- liftIO $ maybe (return VTerm) (\c -> putStr [c] >> return arg) c
+    continu continuation res
+apply VTerm _ continuation = continu continuation VTerm
+apply VRead arg continuation = do
     eof <- liftIO isEOF
     if eof
-        then put Nothing >> applyValue arg VTerm continuation
-        else liftIO getChar >>= put . Just >> applyValue arg VIdentity continuation
+        then put Nothing >> apply arg VTerm continuation
+        else liftIO getChar >>= put . Just >> apply arg VIdentity continuation
 
-continu :: Continuation -> Value -> StateT (Maybe Char) IO (MaybeEvaluated, Continuation)
-continu CEnd _ = error "Shouldn't have gotten here"
-continu (CApply1 arg next) value = return $ maybeApply value arg next
-continu (CApply2 func next) value = applyValue func value next
-continu (CDistribute f2 arg next) value = return (Evaluated arg, CApply2 f2 $ CApply2 value next)
-continu (CLazy0 f next) value = return (f, CApply1 (Evaluated value) next)
+continu :: Continuation -> Value -> StateT (Maybe Char) IO Value
+continu CEnd value = return value
+continu (CEvalApply arg next) VLazy0 = continu next $ VLazy1 arg
+continu (CEvalApply arg next) value = eval arg $ CApply2 value next
+continu (CApply1 arg next) value = apply value arg next
+continu (CApply2 func next) value = apply func value next
+continu (CDistribute f2 arg next) value = apply f2 arg $ CApply2 value next

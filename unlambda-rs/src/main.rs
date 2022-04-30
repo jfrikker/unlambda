@@ -256,9 +256,9 @@ impl Unlambda {
             Continuation::End => panic!("Shouldn't have gotten here"),
             Continuation::Apply1(arg, next) => self.maybe_apply(value, arg.clone(), next.clone()),
             Continuation::Apply2(func, next) => self.apply_value(func.clone(), value, next.clone()),
-            Continuation::Distribute(f2, arg, next) => (MaybeEvaluated::Evaluated(arg.clone()),
+            Continuation::Distribute(f2, arg, next) => (arg.into(),
                 Rc::new(Continuation::Apply2(f2.clone(), Rc::new(Continuation::Apply2(value, next.clone()))))),
-            Continuation::Lazy0(f, next) => (f.clone(), Rc::new(Continuation::Apply1(MaybeEvaluated::Evaluated(value), next.clone()))),
+            Continuation::Lazy0(f, next) => (f.clone(), Rc::new(Continuation::Apply1(value.into(), next.clone()))),
         }
     }
 }
