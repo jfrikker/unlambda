@@ -27,7 +27,7 @@ enum Value {
     Distribute2(Rc<Value>, Rc<Value>),
     Identity,
     Lazy0,
-    Lazy1(MaybeEvaluated),
+    Lazy1(Rc<AstNode>),
     Read,
     PrintCC,
     Term,
@@ -108,16 +108,20 @@ impl From<AstNode> for MaybeEvaluated {
 
 #[derive(Debug, PartialEq)]
 enum Continuation {
-    Apply1(MaybeEvaluated, Rc<Continuation>),
+    EvalApply(Rc<AstNode>, Rc<Continuation>),
+    Apply1(Rc<Value>, Rc<Continuation>),
     Apply2(Rc<Value>, Rc<Continuation>),
     Distribute(Rc<Value>, Rc<Value>, Rc<Continuation>),
-    Lazy0(MaybeEvaluated, Rc<Continuation>),
     End,
 }
 
 impl Continuation {
     fn write_prefix(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::EvalApply(_, next) => {
+                next.write_prefix(f)?;
+                write!(f, "`")
+            }
             Self::Apply1(_, next) => {
                 next.write_prefix(f)?;
                 write!(f, "`")
@@ -130,16 +134,16 @@ impl Continuation {
                 next.write_prefix(f)?;
                 write!(f, "`d")
             }
-            Self::Lazy0(fun, next) => {
-                next.write_prefix(f)?;
-                write!(f, "`d{}", fun)
-            }
             Self::End => Ok(())
         }
     }
 
     fn write_suffix(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::EvalApply(arg, next) => {
+                write!(f, "{}", arg)?;
+                next.write_suffix(f)
+            }
             Self::Apply1(arg, next) => {
                 write!(f, "{}", arg)?;
                 next.write_suffix(f)
@@ -149,7 +153,6 @@ impl Continuation {
                 write!(f, "{}{}", f2, arg)?;
                 next.write_suffix(f)
             }
-            Self::Lazy0(_, next) => next.write_suffix(f),
             Self::End => Ok(())
         }
     }
@@ -163,102 +166,136 @@ impl Display for Continuation {
     }
 }
 
-#[derive(Default)]
 struct Unlambda {
     current_char: Option<char>,
+    current_continuation: Rc<Continuation>,
+}
+
+impl Default for Unlambda {
+    fn default() -> Self {
+        Self {
+            current_char: Default::default(),
+            current_continuation: Rc::new(Continuation::End),
+        }
+    }
 }
 
 impl Unlambda {
     fn run(&mut self, prog: Rc<AstNode>) -> MaybeEvaluated {
-        let (mut prog, mut continuation) = self.step(prog.into(), Continuation::End.into());
-        while *continuation != Continuation::End {
+        let mut prog = self.step(prog.into());
+        while *self.current_continuation != Continuation::End {
             // println!("{} -- {}", prog, continuation);
-            (prog, continuation) = self.step(prog, continuation);
+            prog = self.step(prog);
         }
         prog
     }
 
-    fn step(&mut self, prog: MaybeEvaluated, continuation: Rc<Continuation>) -> (MaybeEvaluated, Rc<Continuation>) {
+    fn step(&mut self, prog: MaybeEvaluated) -> MaybeEvaluated {
         match prog {
             MaybeEvaluated::Unevaluated(ast) => {
                 match ast.as_ref() {
-                    AstNode::Apply(f, a) => (f.into(),
-                        Rc::new(Continuation::Apply1(a.into(), continuation))),
-                    AstNode::Char(c) => (Value::Char(*c).into(), continuation),
-                    AstNode::Constant => (Value::Constant0.into(), continuation),
-                    AstNode::Continuation => (Value::CreateContinuation.into(), continuation),
-                    AstNode::Identity => (Value::Identity.into(), continuation),
-                    AstNode::Distribute => (Value::Distribute0.into(), continuation),
-                    AstNode::Lazy => (Value::Lazy0.into(), continuation),
-                    AstNode::Term => (Value::Term.into(), continuation),
-                    AstNode::Read => (Value::Read.into(), continuation),
-                    AstNode::PrintCC => (Value::PrintCC.into(), continuation),
+                    AstNode::Apply(f, a) => {
+                        self.current_continuation = Rc::new(Continuation::EvalApply(a.clone(), self.current_continuation.clone()));
+                        f.into()
+                    }
+                    AstNode::Char(c) => Value::Char(*c).into(),
+                    AstNode::Constant => Value::Constant0.into(),
+                    AstNode::Continuation => Value::CreateContinuation.into(),
+                    AstNode::Identity => Value::Identity.into(),
+                    AstNode::Distribute => Value::Distribute0.into(),
+                    AstNode::Lazy => Value::Lazy0.into(),
+                    AstNode::Term => Value::Term.into(),
+                    AstNode::Read => Value::Read.into(),
+                    AstNode::PrintCC => Value::PrintCC.into(),
                 }
             }
-            MaybeEvaluated::Evaluated(v) => self.continu(continuation, v)
+            MaybeEvaluated::Evaluated(v) => self.continu(v)
         }
     }
 
-    fn maybe_apply(&mut self, func: Rc<Value>, arg: MaybeEvaluated, continuation: Rc<Continuation>) -> (MaybeEvaluated, Rc<Continuation>) {
-        match &*func {
-            Value::Lazy0 => (Value::Lazy1(arg).into(), continuation),
-            Value::Lazy1(f) => (arg, Continuation::Lazy0(f.clone(), continuation).into()),
-            _ => (arg, Continuation::Apply2(func, continuation).into())
-        }
-    }
-
-    fn apply_value(&mut self, func: Rc<Value>, arg: Rc<Value>, continuation: Rc<Continuation>) -> (MaybeEvaluated, Rc<Continuation>) {
+    fn apply(&mut self, func: Rc<Value>, arg: Rc<Value>) -> MaybeEvaluated {
         match func.as_ref() {
             Value::Char(c) => {
                 print!("{}", c);
-                (arg.into(), continuation)
+                arg.into()
             }
-            Value::Constant0 => (Value::Constant1(arg).into(), continuation),
-            Value::Constant1(k) => (k.clone().into(), continuation),
-            Value::Continuation(c) => (arg.into(), c.clone()),
-            Value::CreateContinuation => (Value::Continuation(continuation.clone()).into(), Continuation::Apply2(arg, continuation).into()),
-            Value::Distribute0 => (Value::Distribute1(arg).into(), continuation),
-            Value::Distribute1(f1) => (Value::Distribute2(f1.clone(), arg).into(), continuation),
-            Value::Distribute2(f1, f2) => (arg.clone().into(),
-                Rc::new(Continuation::Apply2(f1.clone(), Continuation::Distribute(f2.clone(), arg, continuation).into()))),
-            Value::Identity => (arg.into(), continuation),
-            Value::Lazy0 => (Value::Lazy1(arg.into()).into(), continuation),
-            Value::Lazy1(f) => (f.clone(), Continuation::Apply1(arg.into(), continuation).into()),
+            Value::Constant0 => Value::Constant1(arg).into(),
+            Value::Constant1(k) => k.clone().into(),
+            Value::Continuation(c) => {
+                self.current_continuation = c.clone();
+                arg.into()
+            }
+            Value::CreateContinuation => {
+                let continuation = self.current_continuation.clone();
+                self.current_continuation = Continuation::Apply2(arg, continuation.clone()).into();
+                Value::Continuation(continuation).into()
+            }
+            Value::Distribute0 => Value::Distribute1(arg).into(),
+            Value::Distribute1(f1) => Value::Distribute2(f1.clone(), arg).into(),
+            Value::Distribute2(f1, f2) => {
+                self.current_continuation = Rc::new(Continuation::Apply2(f1.clone(), Continuation::Distribute(f2.clone(), arg.clone(), self.current_continuation.clone()).into()));
+                arg.into()
+            }
+            Value::Identity => arg.into(),
+            Value::Lazy0 => arg.into(),
+            Value::Lazy1(f) => {
+                self.current_continuation = Continuation::Apply1(arg.into(), self.current_continuation.clone()).into();
+                f.into()
+            }
             Value::PrintCC => {
                 if let Some(c) = self.current_char {
                     print!("{}", c);
-                    (arg.into(), continuation)
+                    arg.into()
                 } else {
-                    (Value::Term.into(), continuation)
+                    Value::Term.into()
                 }
             }
-            Value::Term => (func.into(), continuation),
+            Value::Term => func.into(),
             Value::Read => {
                 let mut buf = [0];
                 if let Ok(s) = stdin().read(&mut buf) {
                     if s == 1 {
                         self.current_char = Some(buf[0] as char);
-                        self.apply_value(arg, Value::Identity.into(), continuation)
+                        self.apply(arg, Value::Identity.into())
                     } else {
                         self.current_char = None;
-                        self.apply_value(arg, Value::Term.into(), continuation)
+                        self.apply(arg, Value::Term.into())
                     }
                 } else {
                     self.current_char = None;
-                    self.apply_value(arg, Value::Term.into(), continuation)
+                    self.apply(arg, Value::Term.into())
                 }
             }
         }
     }
     
-    fn continu(&mut self, continuation: Rc<Continuation>, value: Rc<Value>) -> (MaybeEvaluated, Rc<Continuation>) {
-        match continuation.as_ref() {
+    fn continu(&mut self, value: Rc<Value>) -> MaybeEvaluated {
+        match self.current_continuation.clone().as_ref() {
             Continuation::End => panic!("Shouldn't have gotten here"),
-            Continuation::Apply1(arg, next) => self.maybe_apply(value, arg.clone(), next.clone()),
-            Continuation::Apply2(func, next) => self.apply_value(func.clone(), value, next.clone()),
-            Continuation::Distribute(f2, arg, next) => (arg.into(),
-                Rc::new(Continuation::Apply2(f2.clone(), Rc::new(Continuation::Apply2(value, next.clone()))))),
-            Continuation::Lazy0(f, next) => (f.clone(), Rc::new(Continuation::Apply1(value.into(), next.clone()))),
+            Continuation::EvalApply(arg, next) => {
+                match value.as_ref() {
+                    Value::Lazy0 => {
+                        self.current_continuation = next.clone();
+                        Value::Lazy1(arg.clone()).into()
+                    }
+                    _ => {
+                        self.current_continuation = Continuation::Apply2(value.clone(), next.clone()).into();
+                        arg.clone().into()
+                    }
+                }
+            }
+            Continuation::Apply1(arg, next) => {
+                self.current_continuation = next.clone();
+                self.apply(value, arg.clone())
+            }
+            Continuation::Apply2(func, next) => {
+                self.current_continuation = next.clone();
+                self.apply(func.clone(), value)
+            }
+            Continuation::Distribute(f2, arg, next) => {
+                self.current_continuation = Rc::new(Continuation::Apply2(f2.clone(), Rc::new(Continuation::Apply2(value, next.clone()))));
+                arg.into()
+            }
         }
     }
 }
