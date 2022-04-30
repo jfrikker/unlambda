@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{rc::Rc, fmt::Display};
 
 use nom::{character::complete::{anychar, none_of}, IResult, multi::many1_count};
 
@@ -14,6 +14,24 @@ pub enum AstNode {
     PrintCC,
     Read,
     Term,
+}
+
+impl Display for AstNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Apply(arg1, arg2) => write!(f, "`{}{}", arg1, arg2),
+            Self::Char('\n') => write!(f, "r"),
+            Self::Char(c) => write!(f, ".{}", c),
+            Self::Constant => write!(f, "k"),
+            Self::Continuation => write!(f, "c"),
+            Self::Distribute => write!(f, "s"),
+            Self::Identity => write!(f, "i"),
+            Self::Lazy => write!(f, "d"),
+            Self::PrintCC => write!(f, "|"),
+            Self::Read => write!(f, "@"),
+            Self::Term => write!(f, "v"),
+        }
+    }
 }
 
 pub fn parse(i: &str) -> IResult<&str, Rc<AstNode>> {

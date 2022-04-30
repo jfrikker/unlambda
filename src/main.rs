@@ -1,4 +1,4 @@
-use std::{io::{stdin, Read}, fs::File, env::args, rc::Rc};
+use std::{io::{stdin, Read}, fs::File, env::args, rc::Rc, fmt::Display};
 
 use parser::AstNode;
 
@@ -33,10 +33,41 @@ enum Value {
     Term,
 }
 
+impl Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Char('\n') => write!(f, "r"),
+            Self::Char(c) => write!(f, ".{}", c),
+            Self::Constant0 => write!(f, "k"),
+            Self::Constant1(arg) => write!(f, "`k{}", arg),
+            Self::Continuation(next) => write!(f, "<cont:{}>", next),
+            Self::CreateContinuation => write!(f, "c"),
+            Self::Distribute0 => write!(f, "s"),
+            Self::Distribute1(arg) => write!(f, "`s{}", arg),
+            Self::Distribute2(arg1, arg2) => write!(f, "``s{}{}", arg1, arg2),
+            Self::Identity => write!(f, "i"),
+            Self::Lazy0 => write!(f, "d"),
+            Self::Lazy1(arg) => write!(f, "`d{}", arg),
+            Self::Read => write!(f, "@"),
+            Self::PrintCC => write!(f, "|"),
+            Self::Term => write!(f, "v"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum MaybeEvaluated {
     Evaluated(Rc<Value>),
     Unevaluated(Rc<AstNode>),
+}
+
+impl Display for MaybeEvaluated {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Evaluated(e) => write!(f, "{}", e),
+            Self::Unevaluated(e) => write!(f, "{}", e),
+        }
+    }
 }
 
 impl From<Rc<Value>> for MaybeEvaluated {
@@ -84,6 +115,54 @@ enum Continuation {
     End,
 }
 
+impl Continuation {
+    fn write_prefix(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Apply1(_, next) => {
+                next.write_prefix(f)?;
+                write!(f, "`")
+            }
+            Self::Apply2(fun, next) => {
+                next.write_prefix(f)?;
+                write!(f, "`{}", fun)
+            },
+            Self::Distribute(_, _, next) => {
+                next.write_prefix(f)?;
+                write!(f, "`d")
+            }
+            Self::Lazy0(fun, next) => {
+                next.write_prefix(f)?;
+                write!(f, "`d{}", fun)
+            }
+            Self::End => Ok(())
+        }
+    }
+
+    fn write_suffix(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Apply1(arg, next) => {
+                write!(f, "{}", arg)?;
+                next.write_suffix(f)
+            }
+            Self::Apply2(_, next) => next.write_suffix(f),
+            Self::Distribute(f2, arg, next) => {
+                write!(f, "{}{}", f2, arg)?;
+                next.write_suffix(f)
+            }
+            Self::Lazy0(_, next) => next.write_suffix(f),
+            Self::End => Ok(())
+        }
+    }
+}
+
+impl Display for Continuation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.write_prefix(f)?;
+        write!(f, "_")?;
+        self.write_suffix(f)
+    }
+}
+
 #[derive(Default)]
 struct Unlambda {
     current_char: Option<char>,
@@ -93,7 +172,7 @@ impl Unlambda {
     fn run(&mut self, prog: Rc<AstNode>) -> MaybeEvaluated {
         let (mut prog, mut continuation) = self.step(prog.into(), Continuation::End.into());
         while *continuation != Continuation::End {
-            // println!("{:?} -- {:?}", prog, continuation);
+            println!("{} -- {}", prog, continuation);
             (prog, continuation) = self.step(prog, continuation);
         }
         prog
