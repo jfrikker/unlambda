@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 module Main where
 
 import AST
@@ -7,7 +8,7 @@ import Parser (parseUnlambda)
 import System.Environment (getArgs)
 import qualified System.IO as IO
 import Text.Parsec.Text (parseFromFile)
-import Control.Monad.State.Strict (StateT, MonadState (get, put), evalStateT)
+import Control.Monad.State (StateT, MonadState (get, put), evalStateT, modify)
 import Control.Monad.Trans (liftIO)
 import System.IO (isEOF)
 
@@ -40,48 +41,72 @@ data Continuation = CEvalApply AstNode Continuation |
     CDistribute Value Value Continuation |
     CEnd deriving (Show)
 
+data InterpreterState = InterpreterState {
+    currentChar :: Maybe Char,
+    currentContinuation :: Continuation
+}
+
+getCh :: MonadState InterpreterState m => m (Maybe Char)
+getCh = currentChar <$> get
+
+setCh :: MonadState InterpreterState m => Maybe Char -> m ()
+setCh c = modify $ \s -> s { currentChar = c}
+
+pushCC :: MonadState InterpreterState m => (Continuation -> Continuation) -> m ()
+pushCC f = modify $ \s -> s { currentContinuation = f $currentContinuation s }
+
+getCC :: MonadState InterpreterState m => m Continuation
+getCC = currentContinuation <$> get
+
+setCC :: MonadState InterpreterState m => Continuation -> m ()
+setCC c = modify $ \s -> s { currentContinuation = c }
+
 run :: AstNode -> IO Value
-run prog = evalStateT (eval prog CEnd) Nothing
+run prog = evalStateT (eval prog) $ InterpreterState { currentChar = Nothing, currentContinuation = CEnd }
 
-eval :: AstNode -> Continuation -> StateT (Maybe Char) IO Value
-eval (AST.Apply f a) continuation = eval f $ CEvalApply a continuation
-eval (AST.PrintChar c) continuation = continu continuation $ VPrintChar c
-eval AST.Constant continuation = continu continuation VConstant0
-eval AST.Continuation continuation = continu continuation VCreateContinuation
-eval AST.Identity continuation = continu continuation VIdentity
-eval AST.Distribute continuation = continu continuation VDistribute0
-eval AST.Lazy continuation = continu continuation VLazy0
-eval AST.Term continuation = continu continuation VTerm
-eval AST.Read continuation = continu continuation VRead
-eval AST.PrintCC continuation = continu continuation VPrintCC
+eval :: AstNode -> StateT InterpreterState IO Value
+eval (AST.Apply f a) = pushCC (CEvalApply a) >> eval f
+eval (AST.PrintChar c) = continu $ VPrintChar c
+eval AST.Constant = continu VConstant0
+eval AST.Continuation = continu VCreateContinuation
+eval AST.Identity = continu VIdentity
+eval AST.Distribute = continu VDistribute0
+eval AST.Lazy = continu VLazy0
+eval AST.Term = continu VTerm
+eval AST.Read = continu VRead
+eval AST.PrintCC = continu VPrintCC
 
-apply :: Value -> Value -> Continuation -> StateT (Maybe Char) IO Value
-apply (VPrintChar c) arg continuation = liftIO (putStr [c]) >> continu continuation arg
-apply VConstant0 arg continuation = continu continuation $ VConstant1 arg
-apply (VConstant1 k) arg continuation = continu continuation k
-apply (VContinuation c) arg _ = continu c arg
-apply VCreateContinuation arg continuation = continu (CApply2 arg continuation) $ VContinuation continuation
-apply VDistribute0 arg continuation = continu continuation $ VDistribute1 arg
-apply (VDistribute1 f1) arg continuation = continu continuation $ VDistribute2 f1 arg
-apply (VDistribute2 f1 f2) arg continuation = continu (CDistribute f2 arg continuation) arg
-apply VIdentity arg continuation = continu continuation arg
-apply VLazy0 arg continuation = continu continuation arg
-apply (VLazy1 f) arg continuation = eval f $ CApply1 arg continuation
-apply VPrintCC arg continuation = do
-    c <- get
+apply :: Value -> Value -> StateT InterpreterState IO Value
+apply (VPrintChar c) arg = liftIO (putStr [c]) >> continu arg
+apply VConstant0 arg = continu $ VConstant1 arg
+apply (VConstant1 k) arg = continu k
+apply (VContinuation c) arg = setCC c >> continu arg
+apply VCreateContinuation arg = do
+    cc <- getCC
+    pushCC $ CApply2 arg
+    continu $ VContinuation cc
+apply VDistribute0 arg = continu $ VDistribute1 arg
+apply (VDistribute1 f1) arg = continu $ VDistribute2 f1 arg
+apply (VDistribute2 f1 f2) arg = pushCC (CDistribute f2 arg) >> apply f1 arg
+apply VIdentity arg = continu arg
+apply VLazy0 arg = continu arg
+apply (VLazy1 f) arg = pushCC (CApply1 arg) >> eval f
+apply VPrintCC arg = do
+    c <- getCh
     res <- liftIO $ maybe (return VTerm) (\c -> putStr [c] >> return arg) c
-    continu continuation res
-apply VTerm _ continuation = continu continuation VTerm
-apply VRead arg continuation = do
+    continu res
+apply VTerm _ = continu VTerm
+apply VRead arg = do
     eof <- liftIO isEOF
     if eof
-        then put Nothing >> apply arg VTerm continuation
-        else liftIO getChar >>= put . Just >> apply arg VIdentity continuation
+        then setCh Nothing >> apply arg VTerm
+        else liftIO getChar >>= setCh . Just >> apply arg VIdentity
 
-continu :: Continuation -> Value -> StateT (Maybe Char) IO Value
-continu CEnd value = return value
-continu (CEvalApply arg next) VLazy0 = continu next $ VLazy1 arg
-continu (CEvalApply arg next) value = eval arg $ CApply2 value next
-continu (CApply1 arg next) value = apply value arg next
-continu (CApply2 func next) value = apply func value next
-continu (CDistribute f2 arg next) value = apply f2 arg $ CApply2 value next
+continu :: Value -> StateT InterpreterState IO Value
+continu v = getCC >>= \cc -> continu' cc v
+    where continu' CEnd value = return value
+          continu' (CEvalApply arg next) VLazy0 = setCC next >> continu (VLazy1 arg)
+          continu' (CEvalApply arg next) value = setCC (CApply2 value next) >> eval arg
+          continu' (CApply1 arg next) value = setCC next >> apply value arg
+          continu' (CApply2 func next) value = setCC next >> apply func value
+          continu' (CDistribute f2 arg next) value = setCC (CApply2 value next) >> apply f2 arg
