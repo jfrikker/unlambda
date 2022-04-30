@@ -12,7 +12,7 @@ fn main() {
     let parsed = parse(&code).unwrap().1;
 
     println!("{:?}", parsed);
-    println!("{:?}", Unlambda::default().run(parsed.into()));
+    println!("{:?}", Unlambda::default().run(parsed));
 }
 
 #[derive(Debug, PartialEq)]
@@ -172,7 +172,7 @@ impl Unlambda {
     fn run(&mut self, prog: Rc<AstNode>) -> MaybeEvaluated {
         let (mut prog, mut continuation) = self.step(prog.into(), Continuation::End.into());
         while *continuation != Continuation::End {
-            println!("{} -- {}", prog, continuation);
+            // println!("{} -- {}", prog, continuation);
             (prog, continuation) = self.step(prog, continuation);
         }
         prog
@@ -195,7 +195,7 @@ impl Unlambda {
                     AstNode::PrintCC => (Value::PrintCC.into(), continuation),
                 }
             }
-            MaybeEvaluated::Evaluated(v) => self.continu(continuation, v.clone())
+            MaybeEvaluated::Evaluated(v) => self.continu(continuation, v)
         }
     }
 
@@ -216,7 +216,7 @@ impl Unlambda {
             Value::Constant0 => (Value::Constant1(arg).into(), continuation),
             Value::Constant1(k) => (k.clone().into(), continuation),
             Value::Continuation(c) => (arg.into(), c.clone()),
-            Value::CreateContinuation => (Value::Continuation(continuation.clone()).into(), Continuation::Apply2(arg.into(), continuation).into()),
+            Value::CreateContinuation => (Value::Continuation(continuation.clone()).into(), Continuation::Apply2(arg, continuation).into()),
             Value::Distribute0 => (Value::Distribute1(arg).into(), continuation),
             Value::Distribute1(f1) => (Value::Distribute2(f1.clone(), arg).into(), continuation),
             Value::Distribute2(f1, f2) => (arg.clone().into(),
