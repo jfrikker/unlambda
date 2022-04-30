@@ -18,6 +18,8 @@ fn main() {
 #[derive(Debug, PartialEq)]
 enum Value {
     Char(char),
+    Constant0,
+    Constant1(Rc<Value>),
     Continuation(Rc<Continuation>),
     CreateContinuation,
     Distribute0,
@@ -104,13 +106,14 @@ impl Unlambda {
                     AstNode::Apply(f, a) => (f.into(),
                         Rc::new(Continuation::Apply1(a.into(), continuation))),
                     AstNode::Char(c) => (Value::Char(*c).into(), continuation),
+                    AstNode::Constant => (Value::Constant0.into(), continuation),
+                    AstNode::Continuation => (Value::CreateContinuation.into(), continuation),
                     AstNode::Identity => (Value::Identity.into(), continuation),
                     AstNode::Distribute => (Value::Distribute0.into(), continuation),
                     AstNode::Lazy => (Value::Lazy0.into(), continuation),
                     AstNode::Term => (Value::Term.into(), continuation),
                     AstNode::Read => (Value::Read.into(), continuation),
                     AstNode::PrintCC => (Value::PrintCC.into(), continuation),
-                    AstNode::Continuation => (Value::CreateContinuation.into(), continuation),
                 }
             }
             MaybeEvaluated::Evaluated(v) => self.continu(continuation, v.clone())
@@ -131,6 +134,8 @@ impl Unlambda {
                 print!("{}", c);
                 (arg.into(), continuation)
             }
+            Value::Constant0 => (Value::Constant1(arg).into(), continuation),
+            Value::Constant1(k) => (k.clone().into(), continuation),
             Value::Continuation(c) => (arg.into(), c.clone()),
             Value::CreateContinuation => (Value::Continuation(continuation.clone()).into(), Continuation::Apply2(arg.into(), continuation).into()),
             Value::Distribute0 => (Value::Distribute1(arg).into(), continuation),
@@ -152,7 +157,7 @@ impl Unlambda {
             Value::Read => {
                 let mut buf = [0];
                 if let Ok(s) = stdin().read(&mut buf) {
-                    if (s == 1) {
+                    if s == 1 {
                         self.current_char = Some(buf[0] as char);
                         self.apply_value(arg, Value::Identity.into(), continuation)
                     } else {

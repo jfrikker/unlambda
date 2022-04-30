@@ -6,6 +6,7 @@ use nom::{character::complete::{anychar, none_of}, IResult, multi::many1_count};
 pub enum AstNode {
     Apply(Rc<AstNode>, Rc<AstNode>),
     Char(char),
+    Constant,
     Continuation,
     Distribute,
     Identity,
@@ -22,6 +23,8 @@ pub fn parse(i: &str) -> IResult<&str, Rc<AstNode>> {
         'c' => Ok((i, Rc::new(AstNode::Continuation))),
         'd' => Ok((i, Rc::new(AstNode::Lazy))),
         'i' => Ok((i, Rc::new(AstNode::Identity))),
+        'k' => Ok((i, Rc::new(AstNode::Constant))),
+        'r' => Ok((i, Rc::new(AstNode::Char('\n')))),
         's' => Ok((i, Rc::new(AstNode::Distribute))),
         'v' => Ok((i, Rc::new(AstNode::Term))),
         '@' => Ok((i, Rc::new(AstNode::Read))),
