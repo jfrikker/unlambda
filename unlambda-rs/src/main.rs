@@ -169,6 +169,14 @@ impl Display for Continuation {
 struct Unlambda {
     current_char: Option<char>,
     current_continuation: Rc<Continuation>,
+    constant0: Rc<Value>,
+    create_continuation: Rc<Value>,
+    distribute0: Rc<Value>,
+    identity: Rc<Value>,
+    lazy0: Rc<Value>,
+    printcc: Rc<Value>,
+    read: Rc<Value>,
+    term: Rc<Value>,
 }
 
 impl Default for Unlambda {
@@ -176,6 +184,14 @@ impl Default for Unlambda {
         Self {
             current_char: Default::default(),
             current_continuation: Rc::new(Continuation::End),
+            constant0: Rc::new(Value::Constant0),
+            create_continuation: Rc::new(Value::CreateContinuation),
+            distribute0: Rc::new(Value::Distribute0),
+            identity: Rc::new(Value::Identity),
+            lazy0: Rc::new(Value::Lazy0),
+            printcc: Rc::new(Value::PrintCC),
+            read: Rc::new(Value::Read),
+            term: Rc::new(Value::Term),
         }
     }
 }
@@ -184,7 +200,7 @@ impl Unlambda {
     fn run(&mut self, prog: Rc<AstNode>) -> MaybeEvaluated {
         let mut prog = self.step(prog.into());
         while *self.current_continuation != Continuation::End {
-            // println!("{} -- {}", prog, continuation);
+            println!("{} -- {}", prog, self.current_continuation);
             prog = self.step(prog);
         }
         prog
@@ -198,23 +214,23 @@ impl Unlambda {
                         self.current_continuation = Rc::new(Continuation::EvalApply(a.clone(), self.current_continuation.clone()));
                         f.into()
                     }
-                    AstNode::Char(c) => Value::Char(*c).into(),
-                    AstNode::Constant => Value::Constant0.into(),
-                    AstNode::Continuation => Value::CreateContinuation.into(),
-                    AstNode::Identity => Value::Identity.into(),
-                    AstNode::Distribute => Value::Distribute0.into(),
-                    AstNode::Lazy => Value::Lazy0.into(),
-                    AstNode::Term => Value::Term.into(),
-                    AstNode::Read => Value::Read.into(),
-                    AstNode::PrintCC => Value::PrintCC.into(),
+                    AstNode::Char(c) => self.continu(Value::Char(*c).into()),
+                    AstNode::Constant => self.continu(self.constant0.clone().into()),
+                    AstNode::Continuation => self.continu(self.create_continuation.clone().into()),
+                    AstNode::Identity => self.continu(self.identity.clone().into()),
+                    AstNode::Distribute => self.continu(self.distribute0.clone().into()),
+                    AstNode::Lazy => self.continu(self.lazy0.clone().into()),
+                    AstNode::Term => self.continu(self.term.clone().into()),
+                    AstNode::Read => self.continu(self.read.clone().into()),
+                    AstNode::PrintCC => self.continu(self.printcc.clone().into()),
                 }
             }
             MaybeEvaluated::Evaluated(v) => self.continu(v)
         }
     }
 
-    fn apply(&mut self, func: Rc<Value>, arg: Rc<Value>) -> MaybeEvaluated {
-        match func.as_ref() {
+    fn apply(&mut self, func: &Value, arg: Rc<Value>) -> MaybeEvaluated {
+        match func {
             Value::Char(c) => {
                 print!("{}", c);
                 arg.into()
@@ -247,23 +263,23 @@ impl Unlambda {
                     print!("{}", c);
                     arg.into()
                 } else {
-                    Value::Term.into()
+                    self.term.clone().into()
                 }
             }
-            Value::Term => func.into(),
+            Value::Term => self.term.clone().into(),
             Value::Read => {
                 let mut buf = [0];
                 if let Ok(s) = stdin().read(&mut buf) {
                     if s == 1 {
                         self.current_char = Some(buf[0] as char);
-                        self.apply(arg, Value::Identity.into())
+                        self.apply(&arg, Value::Identity.into())
                     } else {
                         self.current_char = None;
-                        self.apply(arg, Value::Term.into())
+                        self.apply(&arg, Value::Term.into())
                     }
                 } else {
                     self.current_char = None;
-                    self.apply(arg, Value::Term.into())
+                    self.apply(&arg, Value::Term.into())
                 }
             }
         }
@@ -286,11 +302,11 @@ impl Unlambda {
             }
             Continuation::Apply1(arg, next) => {
                 self.current_continuation = next.clone();
-                self.apply(value, arg.clone())
+                self.apply(&value, arg.clone())
             }
             Continuation::Apply2(func, next) => {
                 self.current_continuation = next.clone();
-                self.apply(func.clone(), value)
+                self.apply(&func, value)
             }
             Continuation::Distribute(f2, arg, next) => {
                 self.current_continuation = Rc::new(Continuation::Apply2(f2.clone(), Rc::new(Continuation::Apply2(value, next.clone()))));
