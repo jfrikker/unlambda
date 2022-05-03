@@ -20,7 +20,7 @@ enum Value {
     Char(char),
     Constant0,
     Constant1(Rc<Value>),
-    Continuation(Rc<Continuation>),
+    Continuation(Vec<Continuation>),
     CreateContinuation,
     Distribute0,
     Distribute1(Rc<Value>),
@@ -40,7 +40,7 @@ impl Display for Value {
             Self::Char(c) => write!(f, ".{}", c),
             Self::Constant0 => write!(f, "k"),
             Self::Constant1(arg) => write!(f, "`k{}", arg),
-            Self::Continuation(next) => write!(f, "<cont:{}>", next),
+            Self::Continuation(next) => write!(f, "<cont:{:?}>", next),
             Self::CreateContinuation => write!(f, "c"),
             Self::Distribute0 => write!(f, "s"),
             Self::Distribute1(arg) => write!(f, "`s{}", arg),
@@ -106,69 +106,17 @@ impl From<AstNode> for MaybeEvaluated {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Continuation {
-    EvalApply(Rc<AstNode>, Rc<Continuation>),
-    Apply1(Rc<Value>, Rc<Continuation>),
-    Apply2(Rc<Value>, Rc<Continuation>),
-    Distribute(Rc<Value>, Rc<Value>, Rc<Continuation>),
-    End,
-}
-
-impl Continuation {
-    fn write_prefix(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::EvalApply(_, next) => {
-                next.write_prefix(f)?;
-                write!(f, "`")
-            }
-            Self::Apply1(_, next) => {
-                next.write_prefix(f)?;
-                write!(f, "`")
-            }
-            Self::Apply2(fun, next) => {
-                next.write_prefix(f)?;
-                write!(f, "`{}", fun)
-            },
-            Self::Distribute(_, _, next) => {
-                next.write_prefix(f)?;
-                write!(f, "`d")
-            }
-            Self::End => Ok(())
-        }
-    }
-
-    fn write_suffix(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::EvalApply(arg, next) => {
-                write!(f, "{}", arg)?;
-                next.write_suffix(f)
-            }
-            Self::Apply1(arg, next) => {
-                write!(f, "{}", arg)?;
-                next.write_suffix(f)
-            }
-            Self::Apply2(_, next) => next.write_suffix(f),
-            Self::Distribute(f2, arg, next) => {
-                write!(f, "{}{}", f2, arg)?;
-                next.write_suffix(f)
-            }
-            Self::End => Ok(())
-        }
-    }
-}
-
-impl Display for Continuation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.write_prefix(f)?;
-        write!(f, "_")?;
-        self.write_suffix(f)
-    }
+    EvalApply(Rc<AstNode>),
+    Apply1(Rc<Value>),
+    Apply2(Rc<Value>),
+    Distribute(Rc<Value>, Rc<Value>),
 }
 
 struct Unlambda {
     current_char: Option<char>,
-    current_continuation: Rc<Continuation>,
+    stack: Vec<Continuation>,
     constant0: Rc<Value>,
     create_continuation: Rc<Value>,
     distribute0: Rc<Value>,
@@ -183,7 +131,7 @@ impl Default for Unlambda {
     fn default() -> Self {
         Self {
             current_char: Default::default(),
-            current_continuation: Rc::new(Continuation::End),
+            stack: Vec::new(),
             constant0: Rc::new(Value::Constant0),
             create_continuation: Rc::new(Value::CreateContinuation),
             distribute0: Rc::new(Value::Distribute0),
@@ -199,8 +147,8 @@ impl Default for Unlambda {
 impl Unlambda {
     fn run(&mut self, prog: Rc<AstNode>) -> MaybeEvaluated {
         let mut prog = self.step(prog.into());
-        while *self.current_continuation != Continuation::End {
-            println!("{} -- {}", prog, self.current_continuation);
+        while !self.stack.is_empty() {
+            // println!("{} -- {:?}", prog, self.stack);
             prog = self.step(prog);
         }
         prog
@@ -211,7 +159,7 @@ impl Unlambda {
             MaybeEvaluated::Unevaluated(ast) => {
                 match ast.as_ref() {
                     AstNode::Apply(f, a) => {
-                        self.current_continuation = Rc::new(Continuation::EvalApply(a.clone(), self.current_continuation.clone()));
+                        self.stack.push(Continuation::EvalApply(a.clone()));
                         f.into()
                     }
                     AstNode::Char(c) => self.continu(Value::Char(*c).into()),
@@ -238,24 +186,26 @@ impl Unlambda {
             Value::Constant0 => Value::Constant1(arg).into(),
             Value::Constant1(k) => k.clone().into(),
             Value::Continuation(c) => {
-                self.current_continuation = c.clone();
+                self.stack.clear();
+                self.stack.extend(c.iter().cloned());
                 arg.into()
             }
             Value::CreateContinuation => {
-                let continuation = self.current_continuation.clone();
-                self.current_continuation = Continuation::Apply2(arg, continuation.clone()).into();
+                let continuation = self.stack.clone();
+                self.stack.push(Continuation::Apply2(arg));
                 Value::Continuation(continuation).into()
             }
             Value::Distribute0 => Value::Distribute1(arg).into(),
             Value::Distribute1(f1) => Value::Distribute2(f1.clone(), arg).into(),
             Value::Distribute2(f1, f2) => {
-                self.current_continuation = Rc::new(Continuation::Apply2(f1.clone(), Continuation::Distribute(f2.clone(), arg.clone(), self.current_continuation.clone()).into()));
+                self.stack.push(Continuation::Distribute(f2.clone(), arg.clone()));
+                self.stack.push(Continuation::Apply2(f1.clone()));
                 arg.into()
             }
             Value::Identity => arg.into(),
             Value::Lazy0 => arg.into(),
             Value::Lazy1(f) => {
-                self.current_continuation = Continuation::Apply1(arg.into(), self.current_continuation.clone()).into();
+                self.stack.push(Continuation::Apply1(arg.into()));
                 f.into()
             }
             Value::PrintCC => {
@@ -286,30 +236,27 @@ impl Unlambda {
     }
     
     fn continu(&mut self, value: Rc<Value>) -> MaybeEvaluated {
-        match self.current_continuation.clone().as_ref() {
-            Continuation::End => panic!("Shouldn't have gotten here"),
-            Continuation::EvalApply(arg, next) => {
+        match self.stack.pop().unwrap() {
+            Continuation::EvalApply(arg) => {
                 match value.as_ref() {
                     Value::Lazy0 => {
-                        self.current_continuation = next.clone();
                         Value::Lazy1(arg.clone()).into()
                     }
                     _ => {
-                        self.current_continuation = Continuation::Apply2(value.clone(), next.clone()).into();
+                        self.stack.push(Continuation::Apply2(value.clone()));
                         arg.clone().into()
                     }
                 }
             }
-            Continuation::Apply1(arg, next) => {
-                self.current_continuation = next.clone();
+            Continuation::Apply1(arg) => {
                 self.apply(&value, arg.clone())
             }
-            Continuation::Apply2(func, next) => {
-                self.current_continuation = next.clone();
+            Continuation::Apply2(func) => {
                 self.apply(&func, value)
             }
-            Continuation::Distribute(f2, arg, next) => {
-                self.current_continuation = Rc::new(Continuation::Apply2(f2.clone(), Rc::new(Continuation::Apply2(value, next.clone()))));
+            Continuation::Distribute(f2, arg) => {
+                self.stack.push(Continuation::Apply2(value));
+                self.stack.push(Continuation::Apply2(f2.clone()));
                 arg.into()
             }
         }
