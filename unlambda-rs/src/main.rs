@@ -163,14 +163,14 @@ impl Unlambda {
                         f.into()
                     }
                     AstNode::Char(c) => self.continu(Value::Char(*c).into()),
-                    AstNode::Constant => self.continu(self.constant0.clone().into()),
-                    AstNode::Continuation => self.continu(self.create_continuation.clone().into()),
-                    AstNode::Identity => self.continu(self.identity.clone().into()),
-                    AstNode::Distribute => self.continu(self.distribute0.clone().into()),
-                    AstNode::Lazy => self.continu(self.lazy0.clone().into()),
-                    AstNode::Term => self.continu(self.term.clone().into()),
-                    AstNode::Read => self.continu(self.read.clone().into()),
-                    AstNode::PrintCC => self.continu(self.printcc.clone().into()),
+                    AstNode::Constant => self.continu(self.constant0.clone()),
+                    AstNode::Continuation => self.continu(self.create_continuation.clone()),
+                    AstNode::Identity => self.continu(self.identity.clone()),
+                    AstNode::Distribute => self.continu(self.distribute0.clone()),
+                    AstNode::Lazy => self.continu(self.lazy0.clone()),
+                    AstNode::Term => self.continu(self.term.clone()),
+                    AstNode::Read => self.continu(self.read.clone()),
+                    AstNode::PrintCC => self.continu(self.printcc.clone()),
                 }
             }
             MaybeEvaluated::Evaluated(v) => self.continu(v)
@@ -205,7 +205,7 @@ impl Unlambda {
             Value::Identity => arg.into(),
             Value::Lazy0 => arg.into(),
             Value::Lazy1(f) => {
-                self.stack.push(Continuation::Apply1(arg.into()));
+                self.stack.push(Continuation::Apply1(arg));
                 f.into()
             }
             Value::PrintCC => {
@@ -240,23 +240,23 @@ impl Unlambda {
             Continuation::EvalApply(arg) => {
                 match value.as_ref() {
                     Value::Lazy0 => {
-                        Value::Lazy1(arg.clone()).into()
+                        Value::Lazy1(arg).into()
                     }
                     _ => {
                         self.stack.push(Continuation::Apply2(value.clone()));
-                        arg.clone().into()
+                        arg.into()
                     }
                 }
             }
             Continuation::Apply1(arg) => {
-                self.apply(&value, arg.clone())
+                self.apply(&value, arg)
             }
             Continuation::Apply2(func) => {
                 self.apply(&func, value)
             }
             Continuation::Distribute(f2, arg) => {
                 self.stack.push(Continuation::Apply2(value));
-                self.stack.push(Continuation::Apply2(f2.clone()));
+                self.stack.push(Continuation::Apply2(f2));
                 arg.into()
             }
         }
