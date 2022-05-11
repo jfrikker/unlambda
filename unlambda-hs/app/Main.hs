@@ -8,7 +8,7 @@ import Parser (parseUnlambda)
 import System.Environment (getArgs)
 import qualified System.IO as IO
 import Text.Parsec.Text (parseFromFile)
-import Control.Monad.State (StateT, MonadState (get, put), evalStateT, modify)
+import Control.Monad.State (StateT, MonadState (get, put), evalStateT, modify, gets)
 import Control.Monad.Trans (liftIO)
 import System.IO (isEOF)
 
@@ -47,7 +47,7 @@ data InterpreterState = InterpreterState {
 }
 
 getCh :: MonadState InterpreterState m => m (Maybe Char)
-getCh = currentChar <$> get
+getCh = gets currentChar
 
 setCh :: MonadState InterpreterState m => Maybe Char -> m ()
 setCh c = modify $ \s -> s { currentChar = c}
@@ -56,7 +56,7 @@ pushCC :: MonadState InterpreterState m => (Continuation -> Continuation) -> m (
 pushCC f = modify $ \s -> s { currentContinuation = f $currentContinuation s }
 
 getCC :: MonadState InterpreterState m => m Continuation
-getCC = currentContinuation <$> get
+getCC = gets currentContinuation
 
 setCC :: MonadState InterpreterState m => Continuation -> m ()
 setCC c = modify $ \s -> s { currentContinuation = c }
