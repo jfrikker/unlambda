@@ -77,7 +77,7 @@ eval AST.Read = continu VRead
 eval AST.PrintCC = continu VPrintCC
 
 apply :: Value -> Value -> StateT InterpreterState IO Value
-apply (VPrintChar c) arg = liftIO (putStr [c]) >> continu arg
+apply (VPrintChar c) arg = liftIO (putChar c) >> continu arg
 apply VConstant0 arg = continu $ VConstant1 arg
 apply (VConstant1 k) arg = continu k
 apply (VContinuation c) arg = setCC c >> continu arg
